@@ -1,35 +1,22 @@
-from typing import Iterable, Dict
+from typing import Dict
 from functools import partial
 from pathlib import Path
 import json
-from dictdiffer import diff, patch
+from dictdiffer import diff
 import sys
 
+self_dir = Path(__file__).parent
+sys.path.append(str(self_dir))
+from lib.parsers import read_info_once
 
-COMMENT_SYMBOL = r'//'
 REGEX_ESCAPE = r'.'
 METADATA_KEYS = ["match", "mapto"]
 SUBREPO_DEFAULT_EXCLUDE = ["old_raw", "sample"]
 
+read_metadata = partial(read_info_once, METADATA_KEYS, ':')
 
-def uncomment_line(line: str):
-    is_comment = line.startswith(COMMENT_SYMBOL)
-    return line[len(COMMENT_SYMBOL):].strip() if is_comment else False
-
-def match_lines(lines: Iterable[str], key: str):
-    try:
-        line = next(filter(lambda l: l.startswith(key), lines))
-        return [x.strip() for x in line.split(':', 1)]
-    except StopIteration:
-        # no matching lines
-        return [key, None]
-
-def read_metadata(lines: Iterable[str]):
-    metadata_lines = filter(None, map(uncomment_line, lines))
-    metadata_kvs = map(partial(match_lines, metadata_lines), METADATA_KEYS)
-    return {k:v for k, v in metadata_kvs}
-
-def regex_unescape(astr: str):
+def regex_unescape(astr):
+    astr = str(astr)
     for c in REGEX_ESCAPE:
         astr = astr.replace(r'\%s' % c, c)
     return astr
@@ -47,7 +34,7 @@ def collect_repo_info(repo_dir: Path) -> Dict[str, Dict[str, Dict[str, str]]]:
             with open(impl_path, encoding='utf-8') as fp:
                 flines = fp.readlines()
             
-            impl_metadata = read_metadata(flines)
+            impl_metadata, _ = read_metadata(flines)
             impl_name = impl_path.stem
             impl_match = impl_metadata["match"]
             impl_mapto = impl_metadata["mapto"]
@@ -61,22 +48,26 @@ def collect_repo_info(repo_dir: Path) -> Dict[str, Dict[str, Dict[str, str]]]:
     return all_repo_info
 
 
-repo_path = Path(sys.argv[1])
+def main(repo_path_str: str):
+    repo_path = Path(repo_path_str)
+    all_repo_info = collect_repo_info(repo_path)
+    with open(repo_path / 'repo.json', 'r') as orig_repo_info_fp:
+        orig_repo_info = json.load(orig_repo_info_fp)
+    info_diff = list(diff(orig_repo_info, all_repo_info))
 
-all_repo_info = collect_repo_info(repo_path)
-with open(repo_path / 'repo.json', 'r') as orig_repo_info_fp:
-    orig_repo_info = json.load(orig_repo_info_fp)
-info_diff = list(diff(orig_repo_info, all_repo_info))
+    if info_diff:
+        diff_json = json.dumps(info_diff, indent=4)
+        print('Repo info diff as JSON:')
+        print(diff_json)
+        cont = input('Proceed? (Y/n) ')
+        cont = cont.lower() in ('y', 'yes')
+        if cont:
+            with open(repo_path / 'repo.json', 'w') as orig_repo_info_fp:
+                json.dump(all_repo_info, orig_repo_info_fp, indent=4)
+        else:
+            print('Aborted.')
+    else:
+        print('Repo info makes no difference. Aborted.')
 
-diff_json = json.dumps(info_diff, indent=4)
-print('Repo info diff as JSON:')
-print(diff_json)
-cont = input('Proceed? (Y/n) ')
-cont = cont.lower() == 'y' or cont.lower() == 'yes'
-if cont:
-    with open(repo_path / 'repo.json', 'w') as orig_repo_info_fp:
-        json.dump(all_repo_info, orig_repo_info_fp, indent=4)
-else:
-    print('Aborted.')
-
-orig_repo_info_fp.close()
+if __name__ == '__main__':
+    main(*sys.argv[1:])
