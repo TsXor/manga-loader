@@ -78,6 +78,28 @@ var ajax = function(obj) {
   xhr.send(obj.data);
 };
 
+var axhrfetch = function(url) {
+  // regard it as an async function that returns text at one url
+  return new Promise(function (resolve, reject) {      
+    var req = new XMLHttpRequest();
+    req.open('GET', url);
+
+    req.onload = function () {
+      if (req.status == 200) {
+        resolve(req.responseText);
+      } else {
+        reject(Error(req.statusText));
+      }
+    };
+
+    req.onerror = function () {
+      reject(Error("Network Error"));
+    };
+
+    req.send(null);
+  });
+}
+
 var storeGet = function(key) {
   var res;
   if (typeof GM_getValue === "undefined") {
@@ -519,7 +541,7 @@ var getViewer = function(prevChapter, nextChapter) {
       ].join('<br>'), null, true);
     }
   });
-  UI.btnSettings.addEventListener('click', function(evt) {
+  UI.btnSettings.addEventListener('click', async function(evt) {
     if(isMessageFloating() && UI.lastFloat === evt.target) {
       showFloatingMsg('');
     } else {
@@ -569,7 +591,8 @@ var getViewer = function(prevChapter, nextChapter) {
         '<button class="ml-setting-forceupdrepo">Force update</button><br>' +
         'Note: Force update is for debugging. It will update local repo info without considering version and will erase version info of all implementations so that they will be reloaded.<br><br>';
       var imp_code, override;
-      [imp_code, override] = MLoaderGetImpCode(window.impInfo[0], window.impInfo[1]);
+      // in fact, at here, current imp is always available locally, so it is not really async
+      [imp_code, override] = await MLoaderGetImpCode(window.impInfo[0], window.impInfo[1]);
       settings += 'Edit Implementations: <br>' +
         'Category: <select class="ml-setting-impl_filter">\
           <option value="Current">Impl being used</option>\
@@ -662,7 +685,7 @@ var getViewer = function(prevChapter, nextChapter) {
         impl_select_obj.dispatchEvent(new Event('change'))
       };
       // impl select
-      getEl('.ml-setting-target_impls', UI.floatingMsg).onchange = function(e) {
+      getEl('.ml-setting-target_impls', UI.floatingMsg).onchange = async function(e) {
         var select_obj = e.target;
         var editBox = getEl('.ml-setting-edited_impl', UI.floatingMsg);
         if (editBox.dataset.modified) {
@@ -673,7 +696,7 @@ var getViewer = function(prevChapter, nextChapter) {
         var isOverrideText = getEl('.ml-setting-impl_is_override', UI.floatingMsg);
         var imp_info = select_obj.options[select_obj.selectedIndex].value.split(',');
         var imp_code, override;
-        [imp_code, override] = MLoaderGetImpCode(imp_info[0], imp_info[1]);
+        [imp_code, override] = await MLoaderGetImpCode(imp_info[0], imp_info[1]);
         editBox.value = imp_code;
         editBox.dataset.impName = imp_info[1];
         editBox.dataset.modified = '';
@@ -1224,30 +1247,22 @@ var MLoaderGetLocalRepoInfo = function() {
   return [repo_version, repo_url];
 }
 
-var MLoaderCheckoutImpRepo = function(force=false) {
+var MLoaderCheckoutImpRepo = async function(force=false) {
   var repo_version, repo_url;
   [repo_version, repo_url] = MLoaderGetLocalRepoInfo();
   
-  var request;
-  
-  request = new XMLHttpRequest();
-  request.open("GET", repo_url+"version", false);
-  request.send(null);
-  var remote_version = request.responseText;
+  var remote_version = await axhrfetch(repo_url+"version");
   remote_version = remote_version ? version2num(remote_version) : 0;
   
   if (remote_version > repo_version || !storeGet("repo_info") || force) {
-    request = new XMLHttpRequest();
-    request.open("GET", repo_url+"repo.json", false);
-    request.send(null);
-    storeSet("repo_info", request.responseText);
+    var info = await axhrfetch(repo_url+"repo.json")
+    storeSet("repo_info", info);
     storeSet("repo_version", remote_version);
-    //console.log(request);
   }
 }
 
-var MLoaderGetImpName = function() {
-  MLoaderCheckoutImpRepo()
+var MLoaderGetImpName = async function() {
+  await MLoaderCheckoutImpRepo()
   //console.log(storeGet("repo_info"));
   window.repo_info = JSON.parse(storeGet("repo_info"));
   var sreponame; var subrepo; var matchregex;
@@ -1289,7 +1304,7 @@ var MLoaderMapImpName = function(srepo_name, imp_name) {
   return [srepo_name, imp_name];
 }
 
-var MLoaderGetImpCode = function(srepo_name, imp_name) {
+var MLoaderGetImpCode = async function(srepo_name, imp_name) {
   var imp_code;
 
   // seek in User Override
@@ -1314,31 +1329,31 @@ var MLoaderGetImpCode = function(srepo_name, imp_name) {
 
   // seek online (disabled if subrepo name is "local")
   if ((!imp_code || imp_ver < repo_version) && srepo_name != "local") {
-    var request = new XMLHttpRequest();
-    request.open("GET", repo_url + srepo_name + "/" + imp_name + ".js", false);
-    request.send(null);
-    //console.log(request.status);
-    imp_code = request.status == 200 ? request.responseText : '';
-    //console.log(imp_code);
-    storeSet("MLoaderImp_" + imp_name, imp_code);
-    storeSet("MLoaderImpVer_" + imp_name, repo_version)
+    try {
+      imp_code = await axhrfetch(repo_url + srepo_name + "/" + imp_name + ".js");
+      //console.log(imp_code);
+      storeSet("MLoaderImp_" + imp_name, imp_code);
+      storeSet("MLoaderImpVer_" + imp_name, repo_version)
+    } catch (error) {
+      imp_code = '';
+    }
   }
   
   return [imp_code, override];
 }
 
-var MLoaderGetImpObj = function(srepo_name, imp_name) {
-  var imp_code = MLoaderGetImpCode(srepo_name, imp_name)[0];
+var MLoaderGetImpObj = async function(srepo_name, imp_name) {
+  var imp_code = (await MLoaderGetImpCode(srepo_name, imp_name))[0];
   eval(imp_code); return impl_src;
 }
 
-var MLoaderLoadImps = function() {
-  [currentSubRepo, currentImpName] = MLoaderGetImpName();
+var MLoaderLoadImps = async function() {
+  [currentSubRepo, currentImpName] = await MLoaderGetImpName();
   if (!currentImpName) { log('no implementation for ' + pageUrl, 'error'); return; }
 
   //make current implementation public for other use
   window.impInfo = [currentSubRepo, currentImpName];
-  window.imp = MLoaderGetImpObj(currentSubRepo, currentImpName);
+  window.imp = await MLoaderGetImpObj(currentSubRepo, currentImpName);
   if (W.BM_MODE || (autoload !== 'no' && (mAutoload || autoload))) {
     log('autoloading...');
     waitAndLoad(imp);
@@ -1360,8 +1375,8 @@ var MLoaderLoadImps = function() {
   document.body.appendChild(btnLoad);
 };
 
-var MLoaderUpdateImpls = function() {
-  MLoaderCheckoutImpRepo(false);
+var MLoaderUpdateImpls = async function() {
+  await MLoaderCheckoutImpRepo(false);
 }
 
 var filterStoreKeyPrefix = function(prefix) {
@@ -1370,8 +1385,8 @@ var filterStoreKeyPrefix = function(prefix) {
   return ikeys.filter(function(ikey) { return ikey.substr(0, prefix_len) == prefix });
 }
 
-var MLoaderForceUpdateImpls = function() {
-  MLoaderCheckoutImpRepo(true);
+var MLoaderForceUpdateImpls = async function() {
+  await MLoaderCheckoutImpRepo(true);
   // flush version of all imps
   var verkeys = filterStoreKeyPrefix("MLoaderImpVer_")
   verkeys.map(function(ikey) { storeDel(ikey) });
